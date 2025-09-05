@@ -4,7 +4,6 @@ import logging
 import websockets
 import platform
 import threading
-import winsound
 import os
 import aiohttp
 import base64
@@ -26,10 +25,8 @@ if not DISCORD_TOKEN:
     print("ERROR: DISCORD_TOKEN no está configurado en las variables de entorno")
     exit(1)
 
-# Configuración de sonidos
-ENABLE_SOUND = True
-SOUND_FREQUENCY = 1000
-SOUND_DURATION = 500
+# Configuración de sonidos (deshabilitado)
+ENABLE_SOUND = False
 
 # ==================== LOGGER ====================
 def setup_logger():
@@ -58,34 +55,12 @@ def get_time():
     return datetime.now().strftime("%H:%M:%S")
 
 def play_notification_sound():
-    """Reproduce un sonido de notificación"""
-    if not ENABLE_SOUND:
-        return
-    
-    try:
-        if platform.system() == "Windows":
-            winsound.Beep(SOUND_FREQUENCY, SOUND_DURATION)
-        else:
-            os.system(f"echo -e '\a'")
-    except Exception as e:
-        logger.debug(f"Error reproduciendo sonido: {e}")
+    """Sonido deshabilitado"""
+    pass
 
 def play_script_found_sound():
-    """Reproduce un sonido especial cuando se encuentra un script"""
-    if not ENABLE_SOUND:
-        return
-    
-    try:
-        if platform.system() == "Windows":
-            winsound.Beep(800, 200)
-            winsound.Beep(1000, 200)
-            winsound.Beep(1200, 300)
-        else:
-            for i in range(3):
-                os.system(f"echo -e '\a'")
-                os.system("sleep 0.2")
-    except Exception as e:
-        logger.debug(f"Error reproduciendo sonido de script: {e}")
+    """Sonido deshabilitado"""
+    pass
 
 def extract_join_script(event: dict):
     """Extrae el join script de los embeds del mensaje"""
@@ -410,7 +385,7 @@ async def main():
         print(f"[{get_time()}] [INFO] Canal objetivo: {TARGET_CHANNEL_ID}")
         print(f"[{get_time()}] [INFO] HTTP server: http://0.0.0.0:{HTTP_PORT}/health")
         print(f"[{get_time()}] [INFO] WebSocket server: ws://0.0.0.0:{WEBSOCKET_PORT}")
-        print(f"[{get_time()}] [INFO] Sonidos: {'Habilitados' if ENABLE_SOUND else 'Deshabilitados'}")
+        print(f"[{get_time()}] [INFO] Sonidos: Deshabilitados")
         print(f"[{get_time()}] [INFO] Iniciando servidores...")
         print()
 
