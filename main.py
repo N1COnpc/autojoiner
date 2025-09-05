@@ -12,7 +12,7 @@ import random
 import time
 from datetime import datetime
 from websockets import WebSocketServerProtocol
-from aiohttp import ClientTimeout
+from aiohttp import ClientTimeout, web
 
 # ==================== CONFIGURACIÓN ====================
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
@@ -372,24 +372,56 @@ class DiscordMonitor:
             await self.session.close()
             self.session = None
 
+# ==================== HTTP SERVER ====================
+async def health_check(request):
+    """Health check endpoint para Railway"""
+    return web.json_response({"status": "ok", "service": "discord-script-finder"})
+
+async def start_http_server():
+    """Inicia el servidor HTTP con health check"""
+    try:
+        app = web.Application()
+        app.router.add_get('/health', health_check)
+        app.router.add_get('/', health_check)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        # Usar puerto diferente para HTTP (8081) para evitar conflicto con WebSocket (8080)
+        site = web.TCPSite(runner, '0.0.0.0', 8081)
+        await site.start()
+        logger.info("HTTP server started on port 8081 with health check")
+        return runner
+    except Exception as e:
+        logger.error(f"Error starting HTTP server: {e}")
+        return None
+
 # ==================== MAIN ====================
 async def main():
     monitor = DiscordMonitor()
+    http_runner = None
     
     try:
         print(f"[{get_time()}] [INFO] Discord Script Finder - Railway")
         print(f"[{get_time()}] [INFO] Canal objetivo: {TARGET_CHANNEL_ID}")
         print(f"[{get_time()}] [INFO] WebSocket server: ws://0.0.0.0:{WEBSOCKET_PORT}")
+        print(f"[{get_time()}] [INFO] HTTP server: http://0.0.0.0:8081/health")
         print(f"[{get_time()}] [INFO] Sonidos: {'Habilitados' if ENABLE_SOUND else 'Deshabilitados'}")
         print(f"[{get_time()}] [INFO] Iniciando servidores...")
         print()
 
+        # Iniciar el servidor HTTP con health check
+        http_runner = await start_http_server()
+        if not http_runner:
+            logger.error("Failed to start HTTP server, exiting...")
+            return
+        
         # Iniciar el servidor WebSocket en un hilo separado
         websocket_thread = threading.Thread(target=websocket_main, daemon=True)
         websocket_thread.start()
         
-        # Esperar un poco para que el servidor WebSocket se inicie
-        time.sleep(1)
+        # Esperar un poco para que los servidores se inicien
+        time.sleep(2)
         
         # Iniciar el monitoreo de Discord
         await monitor.start_monitoring()
@@ -399,6 +431,8 @@ async def main():
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
     finally:
+        if http_runner:
+            await http_runner.cleanup()
         await monitor.cleanup()
 
 if __name__ == "__main__":
