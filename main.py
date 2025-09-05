@@ -379,7 +379,7 @@ class DiscordMonitor:
 # ==================== HTTP SERVER ====================
 async def health_check(request):
     """Health check endpoint para Railway"""
-    return web.json_response({"status": "ok", "service": "discord-script-finder"})
+    return web.Response(text="OK", status=200)
 
 async def start_http_server():
     """Inicia el servidor HTTP con health check"""
@@ -408,24 +408,27 @@ async def main():
     try:
         print(f"[{get_time()}] [INFO] Discord Script Finder - Railway")
         print(f"[{get_time()}] [INFO] Canal objetivo: {TARGET_CHANNEL_ID}")
-        print(f"[{get_time()}] [INFO] WebSocket server: ws://0.0.0.0:{WEBSOCKET_PORT}")
         print(f"[{get_time()}] [INFO] HTTP server: http://0.0.0.0:{HTTP_PORT}/health")
+        print(f"[{get_time()}] [INFO] WebSocket server: ws://0.0.0.0:{WEBSOCKET_PORT}")
         print(f"[{get_time()}] [INFO] Sonidos: {'Habilitados' if ENABLE_SOUND else 'Deshabilitados'}")
         print(f"[{get_time()}] [INFO] Iniciando servidores...")
         print()
 
-        # Iniciar el servidor HTTP con health check
+        # Iniciar el servidor HTTP con health check PRIMERO
         http_runner = await start_http_server()
         if not http_runner:
             logger.error("Failed to start HTTP server, exiting...")
             return
         
+        logger.info("HTTP server started successfully!")
+        
         # Iniciar el servidor WebSocket en un hilo separado
         websocket_thread = threading.Thread(target=websocket_main, daemon=True)
         websocket_thread.start()
         
-        # Esperar un poco para que los servidores se inicien
-        time.sleep(2)
+        # Esperar para que Railway pueda hacer health check
+        logger.info("Waiting for Railway health check...")
+        await asyncio.sleep(5)
         
         # Iniciar el monitoreo de Discord
         await monitor.start_monitoring()
