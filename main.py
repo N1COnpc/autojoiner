@@ -18,7 +18,8 @@ from aiohttp import ClientTimeout, web
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 TARGET_CHANNEL_ID = os.environ.get("TARGET_CHANNEL_ID", "1082008662408712305")
 DISCORD_API_URL = "https://discord.com/api/v9"
-WEBSOCKET_PORT = int(os.environ.get("PORT", 8080))
+HTTP_PORT = int(os.environ.get("PORT", 8080))
+WEBSOCKET_PORT = 8081
 
 # Validar que el token esté configurado
 if not DISCORD_TOKEN:
@@ -156,9 +157,12 @@ class ScriptWebSocketServer:
 
     async def run(self):
         """Inicia el servidor WebSocket"""
-        async with websockets.serve(self.handler, "0.0.0.0", WEBSOCKET_PORT):
-            logger.info(f"> WebSocket server started: ws://0.0.0.0:{WEBSOCKET_PORT}")
-            await asyncio.Future()
+        try:
+            async with websockets.serve(self.handler, "0.0.0.0", WEBSOCKET_PORT):
+                logger.info(f"> WebSocket server started: ws://0.0.0.0:{WEBSOCKET_PORT}")
+                await asyncio.Future()
+        except Exception as e:
+            logger.error(f"WebSocket server error: {e}")
 
 def execute_script(script: str):
     """Envía el script por WebSocket a los clientes conectados"""
@@ -387,10 +391,10 @@ async def start_http_server():
         runner = web.AppRunner(app)
         await runner.setup()
         
-        # Usar puerto diferente para HTTP (8081) para evitar conflicto con WebSocket (8080)
-        site = web.TCPSite(runner, '0.0.0.0', 8081)
+        # Usar puerto principal para HTTP (Railway espera esto)
+        site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT)
         await site.start()
-        logger.info("HTTP server started on port 8081 with health check")
+        logger.info(f"HTTP server started on port {HTTP_PORT} with health check")
         return runner
     except Exception as e:
         logger.error(f"Error starting HTTP server: {e}")
@@ -405,7 +409,7 @@ async def main():
         print(f"[{get_time()}] [INFO] Discord Script Finder - Railway")
         print(f"[{get_time()}] [INFO] Canal objetivo: {TARGET_CHANNEL_ID}")
         print(f"[{get_time()}] [INFO] WebSocket server: ws://0.0.0.0:{WEBSOCKET_PORT}")
-        print(f"[{get_time()}] [INFO] HTTP server: http://0.0.0.0:8081/health")
+        print(f"[{get_time()}] [INFO] HTTP server: http://0.0.0.0:{HTTP_PORT}/health")
         print(f"[{get_time()}] [INFO] Sonidos: {'Habilitados' if ENABLE_SOUND else 'Deshabilitados'}")
         print(f"[{get_time()}] [INFO] Iniciando servidores...")
         print()
