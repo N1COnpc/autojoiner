@@ -6,13 +6,18 @@ import platform
 import threading
 import winsound
 import os
+import aiohttp
+import base64
+import random
+import time
 from datetime import datetime
 from websockets import WebSocketServerProtocol
+from aiohttp import ClientTimeout
 
 # ==================== CONFIGURACIÓN ====================
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 TARGET_CHANNEL_ID = os.environ.get("TARGET_CHANNEL_ID", "1082008662408712305")
-DISCORD_WS_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
+DISCORD_API_URL = "https://discord.com/api/v9"
 WEBSOCKET_PORT = int(os.environ.get("PORT", 8080))
 
 # Validar que el token esté configurado
@@ -175,111 +180,202 @@ def websocket_main():
     """Función para ejecutar el servidor WebSocket en un hilo separado"""
     asyncio.run(server.run())
 
-# ==================== DISCORD ====================
-async def identify(ws):
-    """Envía la identificación al gateway de Discord"""
-    identify_payload = {
-        "op": 2,
-        "d": {
-            "token": DISCORD_TOKEN,
-            "properties": {
-                "os": "Windows", 
-                "browser": "Chrome", 
-                "device": "", 
-                "system_locale": "en-US",
-                "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-                "referrer": "https://discord.com/", 
-                "referring_domain": "discord.com"
-            }
+# ==================== DISCORD HTTP API ====================
+class DiscordMonitor:
+    def __init__(self):
+        self.base_url = DISCORD_API_URL
+        self.session = None
+        self.timeout = ClientTimeout(total=30)
+        self.known_messages = set()
+        
+    def get_headers(self):
+        buildNum = random.randint(160000, 170000)
+        return {
+            "Authorization": DISCORD_TOKEN,
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "X-Super-Properties": base64.b64encode(json.dumps({
+                "os": "Windows",
+                "browser": "Chrome",
+                "device": "",
+                "system_locale": "es-ES",
+                "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "browser_version": "120.0.0.0",
+                "os_version": "10",
+                "referrer": "",
+                "referring_domain": "",
+                "referrer_current": "",
+                "referring_domain_current": "",
+                "release_channel": "stable",
+                "client_build_number": buildNum,
+                "client_event_source": None
+            }).encode()).decode(),
+            "X-Discord-Locale": "es-ES",
+            "X-Debug-Options": "bugReporterEnabled",
+            "Origin": "https://discord.com",
+            "Referer": "https://discord.com/channels/@me",
+            "Accept-Language": "es-ES,es;q=0.9",
+            "Accept": "*/*",
+            "TE": "trailers"
         }
-    }
 
-    await ws.send(json.dumps(identify_payload))
-    logger.info("Sent client identification")
+    async def get_session(self):
+        try:
+            if self.session is None or self.session.closed:
+                connector = aiohttp.TCPConnector(
+                    ssl=False,
+                    force_close=True,
+                    limit=50,
+                    ttl_dns_cache=300
+                )
+                
+                self.session = aiohttp.ClientSession(
+                    timeout=self.timeout,
+                    connector=connector
+                )
+            return self.session
+        except Exception as e:
+            logger.error(f"Error creando sesión: {str(e)}")
+            connector = aiohttp.TCPConnector(ssl=False, force_close=True, limit=50)
+            self.session = aiohttp.ClientSession(
+                timeout=self.timeout,
+                connector=connector
+            )
+            return self.session
 
-async def message_check(event):
-    """Verifica si el mensaje es del canal objetivo y extrae el script"""
-    try:
-        channel_id = event['d']['channel_id']
+    async def safe_request(self, method, url, **kwargs):
+        max_retries = 3
+        current_try = 0
         
-        if channel_id != TARGET_CHANNEL_ID:
-            return
+        while current_try < max_retries:
+            try:
+                session = await self.get_session()
+                async with session.request(method, url, **kwargs) as response:
+                    if response.status == 429:  # Rate limit
+                        data = await response.json()
+                        retry_after = data.get('retry_after', 5)
+                        logger.info(f"Rate limit, esperando {retry_after}s...")
+                        await asyncio.sleep(retry_after + random.uniform(0.1, 1))
+                        continue
+                    
+                    if response.status in [200, 201, 204]:
+                        try:
+                            return await response.json()
+                        except:
+                            return True
+                    else:
+                        logger.error(f"Error HTTP {response.status}")
+                        return None
+                        
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.error(f"Error en intento {current_try + 1}: {str(e)}")
+                current_try += 1
+                if current_try < max_retries:
+                    await asyncio.sleep(random.uniform(1, 3))
+                continue
+            except Exception as e:
+                logger.error(f"Error fatal: {str(e)}")
+                return None
+        return None
 
-        logger.info(f"[MESSAGE] Nuevo mensaje en canal {channel_id}")
-        
-        play_notification_sound()
-        
-        script = extract_join_script(event)
-        
-        if script:
-            logger.info(f"[FOUND] Join script encontrado!")
-            logger.info(f"[SCRIPT] Longitud: {len(script)} caracteres")
+    async def get_channel_messages(self, limit: int = 10):
+        """Obtiene los últimos mensajes del canal objetivo"""
+        try:
+            url = f"{self.base_url}/channels/{TARGET_CHANNEL_ID}/messages"
+            headers = self.get_headers()
+            params = {"limit": limit}
             
-            play_script_found_sound()
+            result = await self.safe_request('GET', url, headers=headers, params=params)
+            if result:
+                return result
+            return []
+        except Exception as e:
+            logger.error(f"Error obteniendo mensajes: {e}")
+            return []
+
+    async def check_new_messages(self):
+        """Verifica si hay mensajes nuevos en el canal"""
+        try:
+            messages = await self.get_channel_messages(5)
+            if not messages:
+                logger.debug("No se pudieron obtener mensajes")
+                return
+
+            new_messages = 0
             
-            if execute_script(script):
-                logger.info(f"[SUCCESS] Script ejecutado correctamente")
+            for message in messages:
+                message_id = message.get('id')
+                
+                if message_id not in self.known_messages:
+                    logger.info(f"[MESSAGE] Nuevo mensaje detectado: {message_id}")
+                    
+                    # Agregar a mensajes conocidos
+                    self.known_messages.add(message_id)
+                    new_messages += 1
+                    
+                    # Reproducir sonido de notificación
+                    play_notification_sound()
+                    
+                    # Extraer join script
+                    script = extract_join_script(message)
+                    
+                    if script:
+                        logger.info(f"[FOUND] Join script encontrado!")
+                        logger.info(f"[SCRIPT] Longitud: {len(script)} caracteres")
+                        
+                        # Reproducir sonido especial para script encontrado
+                        play_script_found_sound()
+                        
+                        # Ejecutar el script
+                        if execute_script(script):
+                            logger.info(f"[SUCCESS] Script ejecutado correctamente")
+                        else:
+                            logger.error(f"[ERROR] Fallo al ejecutar script")
+                    else:
+                        logger.debug(f"[DEBUG] No se encontró join script en el mensaje")
+            
+            if new_messages == 0:
+                logger.debug("No hay mensajes nuevos")
             else:
-                logger.error(f"[ERROR] Fallo al ejecutar script")
-        else:
-            logger.debug(f"[DEBUG] No se encontró join script en el mensaje")
-
-    except Exception as e:
-        logger.error(f"Error procesando mensaje: {e}")
-
-async def message_listener(ws):
-    """Escucha mensajes del WebSocket de Discord"""
-    logger.info("Listening for new messages...")
-    
-    while True:
-        try:
-            event = json.loads(await ws.recv())
-            op_code = event.get("op", None)
-
-            if op_code == 10:  # Hello
-                logger.info("Received Hello from Discord")
-                heartbeat = {"op": 1, "d": None}
-                await ws.send(json.dumps(heartbeat))
-
-            elif op_code == 11:  # Heartbeat ACK
-                logger.debug("Heartbeat ACK received")
-
-            elif op_code == 0:  # Dispatch
-                event_type = event.get("t")
-                if event_type == "MESSAGE_CREATE":
-                    asyncio.create_task(message_check(event))
-
-            elif op_code == 9:  # Invalid Session
-                logger.warning("Invalid session, reconnecting...")
-                await identify(ws)
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.error("WebSocket connection closed")
-            break
+                logger.info(f"✅ {new_messages} mensaje(s) nuevo(s) procesado(s)")
+                
         except Exception as e:
-            logger.error(f"Error in message listener: {e}")
-            break
+            logger.error(f"Error verificando mensajes: {e}")
 
-async def listener():
-    """Función principal que maneja la conexión a Discord"""
-    while True:
-        try:
-            logger.info(f"[CONNECT] Conectando a Discord...")
-            async with websockets.connect(DISCORD_WS_URL, max_size=None) as ws:
-                await identify(ws)
-                await message_listener(ws)
+    async def start_monitoring(self):
+        """Inicia el monitoreo de mensajes"""
+        logger.info("Iniciando monitoreo de mensajes...")
+        
+        # Cargar mensajes existentes para evitar procesar mensajes viejos
+        logger.info("Cargando mensajes existentes...")
+        existing_messages = await self.get_channel_messages(10)
+        for message in existing_messages:
+            self.known_messages.add(message.get('id'))
+        logger.info(f"Cargados {len(self.known_messages)} mensajes existentes")
+        
+        logger.info("🚀 Iniciando monitoreo... Solo detectará mensajes NUEVOS")
+        
+        while True:
+            try:
+                await self.check_new_messages()
+                await asyncio.sleep(2)  # Verificar cada 2 segundos
+            except KeyboardInterrupt:
+                logger.info("Monitoreo detenido por el usuario")
+                break
+            except Exception as e:
+                logger.error(f"Error en monitoreo: {e}")
+                await asyncio.sleep(5)
 
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.error(f"WebSocket closed: {e}. Reconnecting in 5 seconds...")
-            await asyncio.sleep(5)
-            continue
-        except Exception as e:
-            logger.error(f"Connection error: {e}. Reconnecting in 5 seconds...")
-            await asyncio.sleep(5)
-            continue
+    async def cleanup(self):
+        """Limpia recursos"""
+        if self.session and not self.session.closed:
+            await self.session.close()
+            self.session = None
 
 # ==================== MAIN ====================
-if __name__ == "__main__":
+async def main():
+    monitor = DiscordMonitor()
+    
     try:
         print(f"[{get_time()}] [INFO] Discord Script Finder - Railway")
         print(f"[{get_time()}] [INFO] Canal objetivo: {TARGET_CHANNEL_ID}")
@@ -293,13 +389,17 @@ if __name__ == "__main__":
         websocket_thread.start()
         
         # Esperar un poco para que el servidor WebSocket se inicie
-        import time
         time.sleep(1)
         
-        # Iniciar el listener de Discord
-        asyncio.run(listener())
+        # Iniciar el monitoreo de Discord
+        await monitor.start_monitoring()
         
     except KeyboardInterrupt:
         logger.info("Application closed by user")
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
+    finally:
+        await monitor.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())
